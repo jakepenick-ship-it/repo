@@ -65,6 +65,8 @@ def ass_time(t):
 
 
 def build_ass(chunks, ass_path):
+    # Style matches the reference: bold white text with a soft glow (no hard
+    # box/outline), natural mixed case, centered on the frame.
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {WIDTH}
@@ -73,16 +75,16 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Caption,Arial Black,84,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,6,0,2,60,60,520,1
+Style: Caption,DejaVu Sans,104,&H00FFFFFF,&H000000FF,&H00303030,&H00000000,1,0,0,0,100,100,0,0,1,3,0,5,80,80,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     lines = [header]
     for start, end, text in chunks:
-        text_escaped = text.replace("\n", " ").upper()
+        text_escaped = text.replace("\n", " ")
         lines.append(
-            f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Caption,,0,0,0,,{text_escaped}\n"
+            f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Caption,,0,0,0,,{{\\blur4}}{text_escaped}\n"
         )
     ass_path.write_text("".join(lines))
 
@@ -166,15 +168,17 @@ def build_final(broll_video, voiceover, music, ass_path, hook_text, cta_text,
     hook_wrapped = wrap(hook_text, hook_fontsize)
     cta_wrapped = wrap(cta_text, cta_fontsize)
 
+    # No boxed background, to match the reference's glowing-text-over-footage
+    # look; a dark drop shadow keeps it legible against bright b-roll instead.
     drawtext_hook = (
         f"drawtext=text='{esc(hook_wrapped)}':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        f":fontcolor=white:fontsize={hook_fontsize}:box=1:boxcolor=black@0.55:boxborderw=24"
-        f":x=(w-text_w)/2:y=(h*0.28):line_spacing=10"
+        f":fontcolor=white:fontsize={hook_fontsize}:shadowcolor=black@0.85:shadowx=3:shadowy=3"
+        f":x=(w-text_w)/2:y=(h*0.30):line_spacing=10"
         f":enable='between(t,0,{hook_dur})'"
     )
     drawtext_cta = (
         f"drawtext=text='{esc(cta_wrapped)}':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        f":fontcolor=white:fontsize={cta_fontsize}:box=1:boxcolor=black@0.65:boxborderw=22"
+        f":fontcolor=white:fontsize={cta_fontsize}:shadowcolor=black@0.85:shadowx=3:shadowy=3"
         f":x=(w-text_w)/2:y=(h*0.82):line_spacing=8"
         f":enable='between(t,{cta_start:.2f},{total_duration:.2f})'"
     )
@@ -217,7 +221,7 @@ def main():
     ap.add_argument("--hook", default=None, help="Hook text card shown for the first ~1.8s")
     ap.add_argument("--cta", default="Try Epidemic Sound free - link in bio")
     ap.add_argument("--cut-length", type=float, default=2.5, help="Seconds per b-roll jump cut")
-    ap.add_argument("--words-per-caption", type=int, default=3)
+    ap.add_argument("--words-per-caption", type=int, default=2)
     args = ap.parse_args()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

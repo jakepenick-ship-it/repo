@@ -179,31 +179,39 @@ def build_final(broll_video, voiceover, music, ass_path, hook_text, cta_text,
     def esc(t):
         return t.replace(":", "\\:").replace("'", "’")
 
-    def wrap(text, fontsize, char_width_ratio=0.56):
+    def wrap_lines(text, fontsize, char_width_ratio=0.56):
         max_chars = max(10, int(WIDTH * 0.86 / (fontsize * char_width_ratio)))
-        return "\n".join(textwrap.wrap(text, max_chars)) or text
-
-    hook_fontsize, cta_fontsize = 64, 50
-    hook_wrapped = wrap(hook_text, hook_fontsize)
-    cta_wrapped = wrap(cta_text, cta_fontsize)
+        return textwrap.wrap(text, max_chars) or [text]
 
     # Use an actual font file when we found one on disk; otherwise fall back
     # to a fontconfig family-name lookup so this still works cross-platform.
     font_clause = f"fontfile='{font_path}'" if font_path else f"font='{font_family}'"
 
+    def text_block(text, fontsize, y_center_expr, enable_expr):
+        # Stack one drawtext filter per line rather than embedding a newline
+        # in a single drawtext's text value: ffmpeg's own escape sequence for
+        # a line break inside a quoted -vf value is unreliable across builds
+        # (observed literally rendering "n" instead of breaking on ffmpeg 9),
+        # so multiple filters sidesteps that escaping layer entirely.
+        lines = wrap_lines(text, fontsize)
+        line_height = fontsize * 1.3
+        top_offset = -(len(lines) - 1) * line_height / 2
+        clauses = []
+        for i, line in enumerate(lines):
+            y = f"({y_center_expr})+({top_offset + i * line_height:.1f})"
+            clauses.append(
+                f"drawtext=text='{esc(line)}':{font_clause}"
+                f":fontcolor=white:fontsize={fontsize}:shadowcolor=black@0.85:shadowx=3:shadowy=3"
+                f":x=(w-text_w)/2:y={y}:enable='{enable_expr}'"
+            )
+        return ",".join(clauses)
+
     # No boxed background, to match the reference's glowing-text-over-footage
     # look; a dark drop shadow keeps it legible against bright b-roll instead.
-    drawtext_hook = (
-        f"drawtext=text='{esc(hook_wrapped)}':{font_clause}"
-        f":fontcolor=white:fontsize={hook_fontsize}:shadowcolor=black@0.85:shadowx=3:shadowy=3"
-        f":x=(w-text_w)/2:y=(h*0.30):line_spacing=10"
-        f":enable='between(t,0,{hook_dur})'"
-    )
-    drawtext_cta = (
-        f"drawtext=text='{esc(cta_wrapped)}':{font_clause}"
-        f":fontcolor=white:fontsize={cta_fontsize}:shadowcolor=black@0.85:shadowx=3:shadowy=3"
-        f":x=(w-text_w)/2:y=(h*0.82):line_spacing=8"
-        f":enable='between(t,{cta_start:.2f},{total_duration:.2f})'"
+    drawtext_hook = text_block(hook_text, 64, "h*0.30", f"between(t,0,{hook_dur})")
+    drawtext_cta = text_block(
+        cta_text, 50, "h*0.82",
+        f"between(t,{cta_start:.2f},{total_duration:.2f})",
     )
 
     vf = f"{drawtext_hook},{drawtext_cta},subtitles={ass_path}"

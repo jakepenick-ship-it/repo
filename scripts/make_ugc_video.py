@@ -41,7 +41,10 @@ def find_font():
 
 
 def run(cmd):
-    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if result.returncode != 0:
+        print(result.stderr[-4000:])
+        raise subprocess.CalledProcessError(result.returncode, cmd)
 
 
 def probe_duration(path):

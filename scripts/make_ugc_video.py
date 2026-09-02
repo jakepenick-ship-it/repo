@@ -180,7 +180,13 @@ def build_final(broll_video, voiceover, music, ass_path, hook_text, cta_text,
     cta_start = max(0.0, total_duration - cta_dur)
 
     def esc(t):
-        return t.replace(":", "\\:").replace("'", "’")
+        # Drop apostrophes entirely rather than substitute a curly quote:
+        # a stray single-quote character breaks out of drawtext's quoted
+        # text value and corrupts the whole filtergraph, and a screenshot
+        # can't reliably distinguish a curly quote from a straight one to
+        # confirm a substitution actually landed - removing it is the only
+        # option that's unconditionally safe.
+        return t.replace(":", "\\:").replace("'", "")
 
     def wrap_lines(text, fontsize, char_width_ratio=0.56):
         max_chars = max(10, int(WIDTH * 0.86 / (fontsize * char_width_ratio)))

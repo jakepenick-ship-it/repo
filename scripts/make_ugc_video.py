@@ -23,6 +23,22 @@ from pathlib import Path
 
 WIDTH, HEIGHT, FPS = 1080, 1920, 30
 
+# (font file, ASS family name) - first one found on disk wins. Covers the
+# common Linux (Debian/Ubuntu) and macOS default locations.
+FONT_CANDIDATES = [
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "DejaVu Sans"),
+    ("/System/Library/Fonts/Supplemental/Arial Bold.ttf", "Arial"),
+    ("/Library/Fonts/Arial Bold.ttf", "Arial"),
+]
+
+
+def find_font():
+    """Return (fontfile_path_or_None, ass_family_name) for this machine."""
+    for path, family in FONT_CANDIDATES:
+        if Path(path).exists():
+            return path, family
+    return None, "Arial"
+
 
 def run(cmd):
     subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -64,7 +80,7 @@ def ass_time(t):
     return f"{h}:{m:02d}:{s:05.2f}"
 
 
-def build_ass(chunks, ass_path):
+def build_ass(chunks, ass_path, font_family="Arial"):
     # Style matches the reference: bold white text with a soft glow (no hard
     # box/outline), natural mixed case, centered on the frame.
     header = f"""[Script Info]
@@ -75,7 +91,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Caption,DejaVu Sans,104,&H00FFFFFF,&H000000FF,&H00303030,&H00000000,1,0,0,0,100,100,0,0,1,3,0,5,80,80,0,1
+Style: Caption,{font_family},104,&H00FFFFFF,&H000000FF,&H00303030,&H00000000,1,0,0,0,100,100,0,0,1,3,0,5,80,80,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -148,7 +164,7 @@ def assemble_broll(broll_paths, total_duration, cut_length, tmpdir):
 
 
 def build_final(broll_video, voiceover, music, ass_path, hook_text, cta_text,
-                 total_duration, output):
+                 total_duration, output, font_path=None, font_family="Arial"):
     inputs = ["-i", str(broll_video), "-i", str(voiceover)]
     if music:
         inputs += ["-stream_loop", "-1", "-i", str(music)]
@@ -168,16 +184,20 @@ def build_final(broll_video, voiceover, music, ass_path, hook_text, cta_text,
     hook_wrapped = wrap(hook_text, hook_fontsize)
     cta_wrapped = wrap(cta_text, cta_fontsize)
 
+    # Use an actual font file when we found one on disk; otherwise fall back
+    # to a fontconfig family-name lookup so this still works cross-platform.
+    font_clause = f"fontfile='{font_path}'" if font_path else f"font='{font_family}'"
+
     # No boxed background, to match the reference's glowing-text-over-footage
     # look; a dark drop shadow keeps it legible against bright b-roll instead.
     drawtext_hook = (
-        f"drawtext=text='{esc(hook_wrapped)}':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        f"drawtext=text='{esc(hook_wrapped)}':{font_clause}"
         f":fontcolor=white:fontsize={hook_fontsize}:shadowcolor=black@0.85:shadowx=3:shadowy=3"
         f":x=(w-text_w)/2:y=(h*0.30):line_spacing=10"
         f":enable='between(t,0,{hook_dur})'"
     )
     drawtext_cta = (
-        f"drawtext=text='{esc(cta_wrapped)}':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        f"drawtext=text='{esc(cta_wrapped)}':{font_clause}"
         f":fontcolor=white:fontsize={cta_fontsize}:shadowcolor=black@0.85:shadowx=3:shadowy=3"
         f":x=(w-text_w)/2:y=(h*0.82):line_spacing=8"
         f":enable='between(t,{cta_start:.2f},{total_duration:.2f})'"
@@ -233,19 +253,24 @@ def main():
     full_text = " ".join(w[2] for w in words)
     print(f"Transcript: {full_text}")
 
-    hook_text = args.hook or (words[0][2] if not words else " ".join(w[2] for w in words[:6]))
+    default_hook = " ".join(w[2] for w in words[:6]) if words else ""
+    hook_text = args.hook or default_hook
+
+    font_path, font_family = find_font()
+    print(f"Using font: {font_path or font_family}")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         ass_path = tmp / "captions.ass"
-        build_ass(chunks, ass_path)
+        build_ass(chunks, ass_path, font_family)
 
         print("Assembling b-roll with jump cuts...")
         broll_video = assemble_broll(args.broll, duration, args.cut_length, tmp)
 
         print("Compositing final video...")
         build_final(broll_video, args.voiceover, args.music, ass_path,
-                     hook_text, args.cta, duration, args.output)
+                     hook_text, args.cta, duration, args.output,
+                     font_path, font_family)
 
     print(f"Done: {args.output}")
 

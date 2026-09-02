@@ -79,38 +79,6 @@ def transcribe(voiceover_path, max_words_per_chunk=3):
     return chunks, words
 
 
-def ass_time(t):
-    h = int(t // 3600)
-    m = int((t % 3600) // 60)
-    s = t % 60
-    return f"{h}:{m:02d}:{s:05.2f}"
-
-
-def build_ass(chunks, ass_path, font_family="Arial"):
-    # Style matches the reference: bold white text with a soft glow (no hard
-    # box/outline), natural mixed case, centered on the frame.
-    header = f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: {WIDTH}
-PlayResY: {HEIGHT}
-ScaledBorderAndShadow: yes
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Caption,{font_family},104,&H00FFFFFF,&H000000FF,&H00303030,&H00000000,1,0,0,0,100,100,0,0,1,3,0,5,80,80,0,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-    lines = [header]
-    for start, end, text in chunks:
-        text_escaped = text.replace("\n", " ")
-        lines.append(
-            f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Caption,,0,0,0,,{{\\blur4}}{text_escaped}\n"
-        )
-    ass_path.write_text("".join(lines))
-
-
 def normalize_clip(src, dst):
     vf = (
         f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
@@ -169,7 +137,41 @@ def assemble_broll(broll_paths, total_duration, cut_length, tmpdir):
     return broll_out
 
 
-def build_final(broll_video, voiceover, music, ass_path, hook_text, cta_text,
+def esc_drawtext(t):
+    # Drop apostrophes entirely rather than substitute a curly quote: a
+    # stray single-quote character breaks out of drawtext's quoted text
+    # value and corrupts the whole filtergraph, and that's not something
+    # a screenshot of a terminal can reliably confirm either way - removing
+    # it is the only option that's unconditionally safe.
+    return t.replace(":", "\\:").replace("'", "")
+
+
+def wrap_lines(text, fontsize, char_width_ratio=0.56):
+    max_chars = max(10, int(WIDTH * 0.86 / (fontsize * char_width_ratio)))
+    return textwrap.wrap(text, max_chars) or [text]
+
+
+def text_block(text, fontsize, y_center_expr, enable_expr, font_clause):
+    # Stack one drawtext filter per line rather than embedding a newline in
+    # a single drawtext's text value: ffmpeg's own escape sequence for a
+    # line break inside a quoted -vf value is unreliable across builds
+    # (observed literally rendering "n" instead of breaking on ffmpeg 9),
+    # so multiple filters sidesteps that escaping layer entirely.
+    lines = wrap_lines(text, fontsize)
+    line_height = fontsize * 1.3
+    top_offset = -(len(lines) - 1) * line_height / 2
+    clauses = []
+    for i, line in enumerate(lines):
+        y = f"({y_center_expr})+({top_offset + i * line_height:.1f})"
+        clauses.append(
+            f"drawtext=text='{esc_drawtext(line)}':{font_clause}"
+            f":fontcolor=white:fontsize={fontsize}:shadowcolor=black@0.85:shadowx=3:shadowy=3"
+            f":x=(w-text_w)/2:y={y}:enable='{enable_expr}'"
+        )
+    return clauses
+
+
+def build_final(broll_video, voiceover, music, chunks, hook_text, cta_text,
                  total_duration, output, font_path=None, font_family="Arial"):
     inputs = ["-i", str(broll_video), "-i", str(voiceover)]
     if music:
@@ -179,51 +181,32 @@ def build_final(broll_video, voiceover, music, ass_path, hook_text, cta_text,
     cta_dur = 2.5
     cta_start = max(0.0, total_duration - cta_dur)
 
-    def esc(t):
-        # Drop apostrophes entirely rather than substitute a curly quote:
-        # a stray single-quote character breaks out of drawtext's quoted
-        # text value and corrupts the whole filtergraph, and a screenshot
-        # can't reliably distinguish a curly quote from a straight one to
-        # confirm a substitution actually landed - removing it is the only
-        # option that's unconditionally safe.
-        return t.replace(":", "\\:").replace("'", "")
-
-    def wrap_lines(text, fontsize, char_width_ratio=0.56):
-        max_chars = max(10, int(WIDTH * 0.86 / (fontsize * char_width_ratio)))
-        return textwrap.wrap(text, max_chars) or [text]
-
     # Use an actual font file when we found one on disk; otherwise fall back
     # to a fontconfig family-name lookup so this still works cross-platform.
     font_clause = f"fontfile='{font_path}'" if font_path else f"font='{font_family}'"
 
-    def text_block(text, fontsize, y_center_expr, enable_expr):
-        # Stack one drawtext filter per line rather than embedding a newline
-        # in a single drawtext's text value: ffmpeg's own escape sequence for
-        # a line break inside a quoted -vf value is unreliable across builds
-        # (observed literally rendering "n" instead of breaking on ffmpeg 9),
-        # so multiple filters sidesteps that escaping layer entirely.
-        lines = wrap_lines(text, fontsize)
-        line_height = fontsize * 1.3
-        top_offset = -(len(lines) - 1) * line_height / 2
-        clauses = []
-        for i, line in enumerate(lines):
-            y = f"({y_center_expr})+({top_offset + i * line_height:.1f})"
-            clauses.append(
-                f"drawtext=text='{esc(line)}':{font_clause}"
-                f":fontcolor=white:fontsize={fontsize}:shadowcolor=black@0.85:shadowx=3:shadowy=3"
-                f":x=(w-text_w)/2:y={y}:enable='{enable_expr}'"
-            )
-        return ",".join(clauses)
-
     # No boxed background, to match the reference's glowing-text-over-footage
     # look; a dark drop shadow keeps it legible against bright b-roll instead.
-    drawtext_hook = text_block(hook_text, 64, "h*0.30", f"between(t,0,{hook_dur})")
-    drawtext_cta = text_block(
+    clauses = text_block(hook_text, 64, "h*0.30", f"between(t,0,{hook_dur})", font_clause)
+    clauses += text_block(
         cta_text, 50, "h*0.82",
-        f"between(t,{cta_start:.2f},{total_duration:.2f})",
+        f"between(t,{cta_start:.2f},{total_duration:.2f})", font_clause,
     )
 
-    vf = f"{drawtext_hook},{drawtext_cta},subtitles={ass_path}"
+    # Captions are burned via drawtext (not the "subtitles" filter) because
+    # that filter requires libass, which the default Homebrew ffmpeg build
+    # does not include - drawtext has no such dependency and is already
+    # confirmed working for the hook/CTA above.
+    for start, end, text in chunks:
+        # Trim a hair off the end so back-to-back chunks (end[i] == start[i+1])
+        # can't both be "on" on the same frame under between()'s inclusive
+        # bounds and double-render.
+        trimmed_end = max(start + 0.01, end - 0.03)
+        clauses += text_block(
+            text, 76, "h*0.55", f"between(t,{start:.2f},{trimmed_end:.2f})", font_clause,
+        )
+
+    vf = ",".join(clauses)
 
     if music:
         filter_complex = (
@@ -281,14 +264,12 @@ def main():
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
-        ass_path = tmp / "captions.ass"
-        build_ass(chunks, ass_path, font_family)
 
         print("Assembling b-roll with jump cuts...")
         broll_video = assemble_broll(args.broll, duration, args.cut_length, tmp)
 
         print("Compositing final video...")
-        build_final(broll_video, args.voiceover, args.music, ass_path,
+        build_final(broll_video, args.voiceover, args.music, chunks,
                      hook_text, args.cta, duration, args.output,
                      font_path, font_family)
 

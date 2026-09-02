@@ -44,6 +44,9 @@ def run(cmd):
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if result.returncode != 0:
         print(result.stderr[-4000:])
+        debug_path = Path(tempfile.gettempdir()) / "make_ugc_video_last_cmd.txt"
+        debug_path.write_text(repr(cmd))
+        print(f"Exact command (unambiguous repr) written to: {debug_path}")
         raise subprocess.CalledProcessError(result.returncode, cmd)
 
 
